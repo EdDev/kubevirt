@@ -354,6 +354,10 @@ func (h *NetworkUtilsHandler) StartDHCP(nic *cache.DHCPConfig, bridgeInterfaceNa
 }
 
 func (h *NetworkUtilsHandler) CreateTapDevice(tapName string, queueNumber uint32, launcherPID int, mtu int, tapOwner string) error {
+	// Secondary networks do not require tap creation, as the CNI tap plugin should have created it already.
+	if tapName != "tap0" {
+		return nil
+	}
 	tapDeviceSELinuxCmdExecutor, err := buildTapDeviceMaker(tapName, queueNumber, launcherPID, mtu, tapOwner)
 	if err != nil {
 		return err
