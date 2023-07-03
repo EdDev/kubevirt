@@ -986,8 +986,11 @@ var _ = Describe("Template", func() {
 				Expect(ok).To(BeTrue())
 				expectedIfaces := ("[" +
 					"{\"interface\":\"pod37a8eec1ce1\",\"name\":\"default\",\"namespace\":\"default\"}," +
+					"{\"interface\":\"tap37a8eec1ce1\",\"name\":\"kubevirt-tap\",\"namespace\":\"default\"}," +
 					"{\"interface\":\"pod1b4f0e98519\",\"name\":\"test1\",\"namespace\":\"default\"}," +
-					"{\"interface\":\"pod49dba5c72f0\",\"name\":\"test1\",\"namespace\":\"other-namespace\"}" +
+					"{\"interface\":\"tap1b4f0e98519\",\"name\":\"kubevirt-tap\",\"namespace\":\"default\"}," +
+					"{\"interface\":\"pod49dba5c72f0\",\"name\":\"test1\",\"namespace\":\"other-namespace\"}," +
+					"{\"interface\":\"tap49dba5c72f0\",\"name\":\"kubevirt-tap\",\"namespace\":\"default\"}" +
 					"]")
 				Expect(value).To(Equal(expectedIfaces))
 			})
@@ -1026,7 +1029,7 @@ var _ = Describe("Template", func() {
 				Expect(value).To(Equal("default"))
 				value, ok = pod.Annotations["k8s.v1.cni.cncf.io/networks"]
 				Expect(ok).To(BeTrue())
-				Expect(value).To(Equal("[{\"interface\":\"pod1b4f0e98519\",\"name\":\"test1\",\"namespace\":\"default\"}]"))
+				Expect(value).To(Equal("[{\"interface\":\"pod1b4f0e98519\",\"name\":\"test1\",\"namespace\":\"default\"},{\"interface\":\"tap1b4f0e98519\",\"name\":\"kubevirt-tap\",\"namespace\":\"default\"}]"))
 			})
 			It("should add MAC address in the pod annotation", func() {
 				config, kvInformer, svc = configFactory(defaultArch)
@@ -1071,7 +1074,9 @@ var _ = Describe("Template", func() {
 				Expect(ok).To(BeTrue())
 				expectedIfaces := ("[" +
 					"{\"interface\":\"pod37a8eec1ce1\",\"name\":\"default\",\"namespace\":\"default\"}," +
-					"{\"interface\":\"pod1b4f0e98519\",\"mac\":\"de:ad:00:00:be:af\",\"name\":\"test1\",\"namespace\":\"default\"}" +
+					"{\"interface\":\"tap37a8eec1ce1\",\"name\":\"kubevirt-tap\",\"namespace\":\"default\"}," +
+					"{\"interface\":\"pod1b4f0e98519\",\"mac\":\"de:ad:00:00:be:af\",\"name\":\"test1\",\"namespace\":\"default\"}," +
+					"{\"interface\":\"tap1b4f0e98519\",\"name\":\"kubevirt-tap\",\"namespace\":\"default\"}" +
 					"]")
 				Expect(value).To(Equal(expectedIfaces))
 			})
@@ -1122,13 +1127,17 @@ var _ = Describe("Template", func() {
 						networkv1.NetworkStatusAnnot: `[
 							{"interface":"eth0", "name":"default"},
 							{"interface":"net1", "name":"test1", "namespace":"default"},
-							{"interface":"net2", "name":"test1", "namespace":"other-namespace"}
+							{"interface":"pod1", "name":"kubevirt-tap", "namespace":"default"},
+							{"interface":"net2", "name":"test1", "namespace":"other-namespace"},
+							{"interface":"pod2", "name":"kubevirt-tap", "namespace":"default"}
 						]`,
 					},
 					map[string]string{
 						MultusNetworksAnnotation: `[
 							{"interface":"net1", "name":"test1", "namespace":"default"},
-							{"interface":"net2", "name":"test1", "namespace":"other-namespace"}
+							{"interface":"tap1", "name":"kubevirt-tap", "namespace":"default"},
+							{"interface":"net2", "name":"test1", "namespace":"other-namespace"},
+							{"interface":"tap2", "name":"kubevirt-tap", "namespace":"default"}
 						]`,
 					},
 				),
@@ -1136,13 +1145,17 @@ var _ = Describe("Template", func() {
 					map[string]string{
 						networkv1.NetworkStatusAnnot: `[
 							{"interface":"pod16477688c0e", "name":"test1", "namespace":"default"},
-							{"interface":"podb1f51a511f1", "name":"test1", "namespace":"other-namespace"}
+							{"interface":"tap16477688c0e", "name":"kubevirt-tap", "namespace":"default"},
+							{"interface":"podb1f51a511f1", "name":"test1", "namespace":"other-namespace"},
+							{"interface":"tapb1f51a511f1", "name":"kubevirt-tap", "namespace":"default"}
 						]`,
 					},
 					map[string]string{
 						MultusNetworksAnnotation: `[
 							{"interface":"pod16477688c0e", "name":"test1", "namespace":"default"},
-							{"interface":"podb1f51a511f1", "name":"test1", "namespace":"other-namespace"}
+							{"interface":"tap16477688c0e", "name":"kubevirt-tap", "namespace":"default"},
+							{"interface":"podb1f51a511f1", "name":"test1", "namespace":"other-namespace"},
+							{"interface":"tapb1f51a511f1", "name":"kubevirt-tap", "namespace":"default"}
 						]`,
 					},
 				),

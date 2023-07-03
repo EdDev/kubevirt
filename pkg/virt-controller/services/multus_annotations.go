@@ -73,6 +73,11 @@ func GenerateMultusCNIAnnotationFromNameScheme(namespace string, interfaces []v1
 			podInterfaceName := networkNameScheme[network.Name]
 			vmiIface := vmispec.LookupInterfaceByName(interfaces, network.Name)
 			multusNetworkAnnotationPool.add(newMultusAnnotationData(namespace, vmiIface, network, podInterfaceName))
+			// For each secondary networks, add a tap device through the tap plugin (CNI).
+			const tapNetAttDefName = "default/kubevirt-tap"
+			multusNetworkAnnotationPool.add(
+				newTapAnnotationData(namespace, tapNetAttDefName, GenerateTapDeviceName(podInterfaceName)),
+			)
 		}
 	}
 
@@ -94,6 +99,19 @@ func newMultusAnnotationData(namespace string, iface *v1.Interface, network v1.N
 		Namespace:     namespace,
 		NetworkName:   networkName,
 	}
+}
+
+func newTapAnnotationData(namespace string, netAttDefName string, podInterfaceName string) multusNetworkAnnotation {
+	namespace, networkName := getNamespaceAndNetworkName(namespace, netAttDefName)
+	return multusNetworkAnnotation{
+		InterfaceName: podInterfaceName,
+		Namespace:     namespace,
+		NetworkName:   networkName,
+	}
+}
+
+func GenerateTapDeviceName(podInterfaceName string) string {
+	return "tap" + podInterfaceName[3:]
 }
 
 func NonDefaultMultusNetworksIndexedByIfaceName(pod *k8sv1.Pod) map[string]networkv1.NetworkStatus {
