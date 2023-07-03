@@ -71,8 +71,8 @@ func GenerateMultusCNIAnnotationFromNameScheme(namespace string, interfaces []v1
 	for _, network := range networks {
 		if vmispec.IsSecondaryMultusNetwork(network) {
 			podInterfaceName := networkNameScheme[network.Name]
-			multusNetworkAnnotationPool.add(
-				newMultusAnnotationData(namespace, interfaces, network, podInterfaceName))
+			vmiIface := vmispec.LookupInterfaceByName(interfaces, network.Name)
+			multusNetworkAnnotationPool.add(newMultusAnnotationData(namespace, vmiIface, network, podInterfaceName))
 		}
 	}
 
@@ -82,12 +82,11 @@ func GenerateMultusCNIAnnotationFromNameScheme(namespace string, interfaces []v1
 	return "", nil
 }
 
-func newMultusAnnotationData(namespace string, interfaces []v1.Interface, network v1.Network, podInterfaceName string) multusNetworkAnnotation {
-	multusIface := vmispec.LookupInterfaceByName(interfaces, network.Name)
+func newMultusAnnotationData(namespace string, iface *v1.Interface, network v1.Network, podInterfaceName string) multusNetworkAnnotation {
 	namespace, networkName := getNamespaceAndNetworkName(namespace, network.Multus.NetworkName)
 	var multusIfaceMac string
-	if multusIface != nil {
-		multusIfaceMac = multusIface.MacAddress
+	if iface != nil {
+		multusIfaceMac = iface.MacAddress
 	}
 	return multusNetworkAnnotation{
 		InterfaceName: podInterfaceName,
