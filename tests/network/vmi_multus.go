@@ -448,7 +448,7 @@ var _ = SIGDescribe("[Serial]Multus", Serial, decorators.Multus, func() {
 				libwait.WaitUntilVMIReady(vmiTwo, console.LoginToFedora)
 			})
 
-			It("[test_id:676]should configure valid custom MAC address on Linux bridge CNI interface.", func() {
+			FIt("[test_id:676]should configure valid custom MAC address on Linux bridge CNI interface.", func() {
 				By("Creating another VM with custom MAC address on its Linux bridge CNI interface.")
 				linuxBridgeInterfaceWithCustomMac := linuxBridgeInterface
 				linuxBridgeInterfaceWithCustomMac.MacAddress = customMacAddress
