@@ -3208,7 +3208,7 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 					}},
 					HaveKeyWithValue(
 						networkv1.NetworkAttachmentAnnot,
-						`[{"interface":"pod7e0055a6880","name":"net1","namespace":"default"}]`)),
+						`[{"interface":"pod7e0055a6880","name":"net1","namespace":"default"},{"interface":"tap7e0055a6880","name":"kubevirt-tap","namespace":"default"}]`)),
 				Entry("hotplug multiple interfaces",
 					[]virtv1.AddInterfaceOptions{{
 						NetworkAttachmentDefinitionName: "net1",
@@ -3219,7 +3219,7 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 					}},
 					HaveKeyWithValue(
 						networkv1.NetworkAttachmentAnnot,
-						`[{"interface":"pod7e0055a6880","name":"net1","namespace":"default"},{"interface":"pod48802102d24","name":"net1","namespace":"default"}]`)),
+						`[{"interface":"pod7e0055a6880","name":"net1","namespace":"default"},{"interface":"tap7e0055a6880","name":"kubevirt-tap","namespace":"default"},{"interface":"pod48802102d24","name":"net1","namespace":"default"},{"interface":"tap48802102d24","name":"kubevirt-tap","namespace":"default"}]`)),
 			)
 			DescribeTable("the subject interface name, in the pod networks annotation, should be in similar form as other interfaces",
 				func(testPodNetworkStatus []networkv1.NetworkStatus, expectedMultusNetworksAnnotation string) {
@@ -3258,7 +3258,9 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 					// expected Multus network annotation
 					`[
 							{"interface":"net1", "name":"red-net", "namespace": "default"},
-							{"interface":"net2", "name":"blue-net", "namespace": "default"}
+							{"interface":"tap1", "name":"kubevirt-tap", "namespace": "default"},
+							{"interface":"net2", "name":"blue-net", "namespace": "default"},
+							{"interface":"tap2", "name":"kubevirt-tap", "namespace": "default"}
 					]`,
 				),
 				Entry("when Multus network-status annotation interfaces has hashed names",
@@ -3270,7 +3272,9 @@ var _ = Describe("VirtualMachineInstance watcher", func() {
 					// expected Multus network annotation
 					`[
 							{"interface":"podb1f51a511f1", "name":"red-net", "namespace": "default"},
-							{"interface":"pod16477688c0e", "name":"blue-net", "namespace": "default"}
+							{"interface":"tapb1f51a511f1", "name":"kubevirt-tap", "namespace": "default"},
+							{"interface":"pod16477688c0e", "name":"blue-net", "namespace": "default"},
+							{"interface":"tap16477688c0e", "name":"kubevirt-tap", "namespace": "default"}
 					]`,
 				),
 			)

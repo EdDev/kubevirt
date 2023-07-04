@@ -71,8 +71,13 @@ func GenerateMultusCNIAnnotationFromNameScheme(namespace string, interfaces []v1
 	for _, network := range networks {
 		if vmispec.IsSecondaryMultusNetwork(network) {
 			podInterfaceName := networkNameScheme[network.Name]
+			vmiIface := vmispec.LookupInterfaceByName(interfaces, network.Name)
+			multusNetworkAnnotationPool.add(newMultusAnnotationData(namespace, vmiIface, network, podInterfaceName))
+			// For each secondary networks, add a tap device through the tap plugin (CNI).
+			const tapNetAttDefName = "default/kubevirt-tap"
 			multusNetworkAnnotationPool.add(
-				newMultusAnnotationData(namespace, interfaces, network, podInterfaceName))
+				newTapAnnotationData(namespace, tapNetAttDefName, GenerateTapDeviceName(podInterfaceName)),
+			)
 		}
 	}
 
@@ -82,12 +87,11 @@ func GenerateMultusCNIAnnotationFromNameScheme(namespace string, interfaces []v1
 	return "", nil
 }
 
-func newMultusAnnotationData(namespace string, interfaces []v1.Interface, network v1.Network, podInterfaceName string) multusNetworkAnnotation {
-	multusIface := vmispec.LookupInterfaceByName(interfaces, network.Name)
+func newMultusAnnotationData(namespace string, iface *v1.Interface, network v1.Network, podInterfaceName string) multusNetworkAnnotation {
 	namespace, networkName := getNamespaceAndNetworkName(namespace, network.Multus.NetworkName)
 	var multusIfaceMac string
-	if multusIface != nil {
-		multusIfaceMac = multusIface.MacAddress
+	if iface != nil {
+		multusIfaceMac = iface.MacAddress
 	}
 	return multusNetworkAnnotation{
 		InterfaceName: podInterfaceName,
@@ -95,6 +99,19 @@ func newMultusAnnotationData(namespace string, interfaces []v1.Interface, networ
 		Namespace:     namespace,
 		NetworkName:   networkName,
 	}
+}
+
+func newTapAnnotationData(namespace string, netAttDefName string, podInterfaceName string) multusNetworkAnnotation {
+	namespace, networkName := getNamespaceAndNetworkName(namespace, netAttDefName)
+	return multusNetworkAnnotation{
+		InterfaceName: podInterfaceName,
+		Namespace:     namespace,
+		NetworkName:   networkName,
+	}
+}
+
+func GenerateTapDeviceName(podInterfaceName string) string {
+	return "tap" + podInterfaceName[3:]
 }
 
 func NonDefaultMultusNetworksIndexedByIfaceName(pod *k8sv1.Pod) map[string]networkv1.NetworkStatus {
