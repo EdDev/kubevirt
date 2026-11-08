@@ -36,18 +36,15 @@ a controller is set up, and an execution will process this scenario.
 */
 type MockWorkQueue[T comparable] struct {
 	workqueue.TypedRateLimitingInterface[T]
-	addWG            *sync.WaitGroup
+	addWG            atomic.Pointer[sync.WaitGroup]
 	rateLimitedEnque int32
 	addAfterEnque    int32
-	wgLock           sync.Mutex
 }
 
 func (q *MockWorkQueue[T]) Add(item T) {
 	q.TypedRateLimitingInterface.Add(item)
-	q.wgLock.Lock()
-	defer q.wgLock.Unlock()
-	if q.addWG != nil {
-		q.addWG.Done()
+	if wg := q.addWG.Load(); wg != nil {
+		wg.Done()
 	}
 }
 
@@ -59,10 +56,8 @@ func (q *MockWorkQueue[T]) AddRateLimited(item T) {
 func (q *MockWorkQueue[T]) AddAfter(item T, duration time.Duration) {
 	q.TypedRateLimitingInterface.AddAfter(item, duration)
 	atomic.AddInt32(&q.addAfterEnque, 1)
-	q.wgLock.Lock()
-	defer q.wgLock.Unlock()
-	if q.addWG != nil {
-		q.addWG.Done()
+	if wg := q.addWG.Load(); wg != nil {
+		wg.Done()
 	}
 }
 
@@ -76,28 +71,26 @@ func (q *MockWorkQueue[T]) GetAddAfterEnqueueCount() int {
 
 // ExpectAdds allows setting the amount of expected enqueues.
 func (q *MockWorkQueue[T]) ExpectAdds(diff int) {
-	q.wgLock.Lock()
-	defer q.wgLock.Unlock()
-	q.addWG = &sync.WaitGroup{}
-	q.addWG.Add(diff)
+	wg := &sync.WaitGroup{}
+	wg.Add(diff)
+	q.addWG.Store(wg)
 }
 
 // Wait waits until the expected amount of ExpectedAdds has happened.
 // It will not block if there were no expectations set.
 func (q *MockWorkQueue[T]) Wait() {
-	q.wgLock.Lock()
-	wg := q.addWG
-	q.wgLock.Unlock()
-	if wg != nil {
-		wg.Wait()
-		q.wgLock.Lock()
-		q.addWG = nil
-		q.wgLock.Unlock()
+	wg := q.addWG.Load()
+	if wg == nil {
+		return
 	}
+	wg.Wait()
+	// Only clear the WaitGroup that was actually waited on; a concurrent
+	// ExpectAdds may have already installed a new one.
+	q.addWG.CompareAndSwap(wg, nil)
 }
 
 func NewMockWorkQueue[T comparable](queue workqueue.TypedRateLimitingInterface[T]) *MockWorkQueue[T] {
-	return &MockWorkQueue[T]{queue, nil, 0, 0, sync.Mutex{}}
+	return &MockWorkQueue[T]{TypedRateLimitingInterface: queue}
 }
 
 func NewFrozenClockRateLimitingQueue(name string) workqueue.TypedRateLimitingInterface[string] {

@@ -37,7 +37,10 @@ go_library(
 
 go_test(
     name = "go_default_test",
-    srcs = ["testutils_suite_test.go"],
+    srcs = [
+        "mock_queue_test.go",
+        "testutils_suite_test.go",
+    ],
     embed = [":go_default_library"],
     race = "on",
     deps = ["//staging/src/kubevirt.io/client-go/testutils:go_default_library"],
