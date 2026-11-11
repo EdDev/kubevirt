@@ -21,12 +21,134 @@ package multus
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"reflect"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/util/sets"
 )
+
+// networkSelectionElement models the fields of a Multus network-selection
+// element that KubeVirt owns; every other field is preserved in extras and
+// re-emitted on marshal with value fidelity (number precision included),
+// though formatting is normalized.
+//
+// The vendored networkv1.NetworkSelectionElement type is deliberately not used
+// here: round-tripping through it would drop fields it does not model, which
+// is exactly the data loss this merge exists to prevent.
+//
+// Modeled fields set to JSON null are dropped on marshal; null is equivalent
+// to absent for Multus consumers.
+type networkSelectionElement struct {
+	Namespace        string   `json:"namespace,omitempty"`
+	Name             string   `json:"name"`
+	InterfaceRequest string   `json:"interface,omitempty"`
+	MacRequest       string   `json:"mac,omitempty"`
+	CNIArgs          *cniArgs `json:"cni-args,omitempty"`
+
+	extras map[string]json.RawMessage
+}
+
+// cniArgs models the only cni-args key KubeVirt writes: logicNetworkName,
+// which it uses to disambiguate binding-plugin elements sharing a NAD. It is
+// modeled - rather than left to extras - because it is part of the element key
+// for such elements. Other cni-args keys (e.g. deviceID) are external and
+// preserved in extras. Merge policy still preserves the entire current
+// cni-args object (see mergeNetworkSelectionElement), since external
+// controllers may enrich the object KubeVirt last wrote.
+type cniArgs struct {
+	LogicNetworkName string `json:"logicNetworkName,omitempty"`
+
+	extras map[string]json.RawMessage
+}
+
+// The JSON field names modeled by the structs above; every other field is
+// external and preserved. Pinned to the struct tags by
+// TestOwnedJSONFieldsMatchStructTags, so the lists cannot drift from the
+// structs.
+var (
+	elementOwnedJSONFields = []string{"namespace", "name", "interface", "mac", "cni-args"}
+	cniArgsOwnedJSONFields = []string{"logicNetworkName"}
+)
+
+func (e *networkSelectionElement) UnmarshalJSON(data []byte) error {
+	type alias networkSelectionElement
+	if err := decodeWithExtras(data, (*alias)(e), elementOwnedJSONFields, &e.extras); err != nil {
+		return fmt.Errorf("failed to decode network selection element: %w", err)
+	}
+
+	return nil
+}
+
+func (e networkSelectionElement) MarshalJSON() ([]byte, error) {
+	type alias networkSelectionElement
+
+	return encodeWithExtras(alias(e), e.extras)
+}
+
+func (a *cniArgs) UnmarshalJSON(data []byte) error {
+	type alias cniArgs
+	if err := decodeWithExtras(data, (*alias)(a), cniArgsOwnedJSONFields, &a.extras); err != nil {
+		return fmt.Errorf("failed to decode cni-args: %w", err)
+	}
+
+	return nil
+}
+
+func (a cniArgs) MarshalJSON() ([]byte, error) {
+	type alias cniArgs
+
+	return encodeWithExtras(alias(a), a.extras)
+}
+
+// decodeWithExtras decodes data into owned and captures every field not named
+// in ownedFields as raw JSON in extras, so it can be re-emitted on marshal.
+// Owned fields are matched case-insensitively, mirroring encoding/json's field
+// binding: a differently-cased owned field must not survive in extras and be
+// emitted next to its canonical spelling.
+func decodeWithExtras(data []byte, owned any, ownedFields []string, extras *map[string]json.RawMessage) error {
+	if err := json.Unmarshal(data, owned); err != nil {
+		return err
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	for field := range fields {
+		for _, ownedField := range ownedFields {
+			if strings.EqualFold(field, ownedField) {
+				delete(fields, field)
+				break
+			}
+		}
+	}
+	*extras = fields
+
+	return nil
+}
+
+// encodeWithExtras re-emits the extras fields alongside the marshaled owned
+// fields. Extra values keep their JSON value, number precision included.
+func encodeWithExtras(owned any, extras map[string]json.RawMessage) ([]byte, error) {
+	base, err := json.Marshal(owned)
+	if err != nil {
+		return nil, err
+	}
+	if len(extras) == 0 {
+		return base, nil
+	}
+
+	fields := map[string]json.RawMessage{}
+	if err := json.Unmarshal(base, &fields); err != nil {
+		return nil, err
+	}
+	maps.Copy(fields, extras)
+
+	return json.Marshal(fields)
+}
 
 type networkSelectionElementKey struct {
 	namespace        string
@@ -35,15 +157,34 @@ type networkSelectionElementKey struct {
 	logicNetworkName string
 }
 
-var kubevirtOwnedNetworkSelectionFields = sets.New[string]("namespace", "name", "interface", "mac")
+// key identifies the element in the annotation. An empty namespace defaults to
+// the pod namespace, matching Multus semantics, so that an externally dropped
+// namespace does not fork one attachment into two elements.
+func (e networkSelectionElement) key(podNamespace string) networkSelectionElementKey {
+	namespace := e.Namespace
+	if namespace == "" {
+		namespace = podNamespace
+	}
+
+	logicNetworkName := ""
+	if e.InterfaceRequest == "" && e.CNIArgs != nil {
+		logicNetworkName = e.CNIArgs.LogicNetworkName
+	}
+
+	return networkSelectionElementKey{
+		namespace:        namespace,
+		name:             e.Name,
+		iface:            e.InterfaceRequest,
+		logicNetworkName: logicNetworkName,
+	}
+}
 
 // MergeNetworkSelectionAnnotations merges the desired k8s.v1.cni.cncf.io/networks
 // annotation into the current one.
 //
-// The current annotation is parsed as raw JSON so fields that are not modeled by
-// KubeVirt are preserved. Only fields owned by KubeVirt are replaced. Elements
-// listed in the absent annotations are removed.
-func MergeNetworkSelectionAnnotations(current, desired string, absentAnnotations ...string) (string, error) {
+// Fields that are not modeled by KubeVirt are preserved. Only fields owned by
+// KubeVirt are replaced. Elements listed in the absent annotations are removed.
+func MergeNetworkSelectionAnnotations(podNamespace, current, desired string, absentAnnotations ...string) (string, error) {
 	currentElements, err := parseNetworkSelectionAnnotation(current)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse current network selection annotation: %w", err)
@@ -59,7 +200,7 @@ func MergeNetworkSelectionAnnotations(current, desired string, absentAnnotations
 		return "", fmt.Errorf("failed to parse absent network selection annotations: %w", err)
 	}
 
-	mergedElements, err := mergeNetworkSelectionElements(currentElements, desiredElements, absentElements)
+	mergedElements, err := mergeNetworkSelectionElements(podNamespace, currentElements, desiredElements, absentElements)
 	if err != nil {
 		return "", err
 	}
@@ -68,47 +209,45 @@ func MergeNetworkSelectionAnnotations(current, desired string, absentAnnotations
 }
 
 func mergeNetworkSelectionElements(
-	currentElements, desiredElements, absentElements []map[string]any,
-) ([]map[string]any, error) {
-	desiredElementsByKey, err := indexNetworkSelectionElements(desiredElements)
+	podNamespace string,
+	currentElements, desiredElements, absentElements []networkSelectionElement,
+) ([]networkSelectionElement, error) {
+	desiredElementsByKey, err := indexNetworkSelectionElements(podNamespace, desiredElements)
 	if err != nil {
 		return nil, err
 	}
-	absentElementsByKey, err := indexNetworkSelectionElements(absentElements)
+	absentElementsByKey, err := indexNetworkSelectionElements(podNamespace, absentElements)
 	if err != nil {
 		return nil, err
 	}
 
-	mergedElements, mergedDesiredKeys, err := mergeCurrentNetworkSelectionElements(
+	mergedElements, mergedDesiredKeys := mergeCurrentNetworkSelectionElements(
+		podNamespace,
 		currentElements,
 		desiredElementsByKey,
 		absentElementsByKey,
 	)
-	if err != nil {
-		return nil, err
-	}
 
 	return appendNewNetworkSelectionElements(
+		podNamespace,
 		mergedElements,
 		desiredElements,
 		mergedDesiredKeys,
 		absentElementsByKey,
-	)
+	), nil
 }
 
 func mergeCurrentNetworkSelectionElements(
-	currentElements []map[string]any,
-	desiredElementsByKey map[networkSelectionElementKey]map[string]any,
-	absentElementsByKey map[networkSelectionElementKey]map[string]any,
-) ([]map[string]any, sets.Set[networkSelectionElementKey], error) {
-	mergedElements := make([]map[string]any, 0, len(currentElements))
+	podNamespace string,
+	currentElements []networkSelectionElement,
+	desiredElementsByKey map[networkSelectionElementKey]networkSelectionElement,
+	absentElementsByKey map[networkSelectionElementKey]networkSelectionElement,
+) ([]networkSelectionElement, sets.Set[networkSelectionElementKey]) {
+	mergedElements := make([]networkSelectionElement, 0, len(currentElements))
 	mergedDesiredKeys := sets.New[networkSelectionElementKey]()
 
 	for _, currentElement := range currentElements {
-		key, err := networkSelectionElementKeyFromMap(currentElement)
-		if err != nil {
-			return nil, nil, err
-		}
+		key := currentElement.key(podNamespace)
 
 		if _, isAbsent := absentElementsByKey[key]; isAbsent {
 			continue
@@ -120,23 +259,21 @@ func mergeCurrentNetworkSelectionElements(
 			continue
 		}
 
-		mergedElements = append(mergedElements, maps.Clone(currentElement))
+		mergedElements = append(mergedElements, currentElement)
 	}
 
-	return mergedElements, mergedDesiredKeys, nil
+	return mergedElements, mergedDesiredKeys
 }
 
 func appendNewNetworkSelectionElements(
-	mergedElements []map[string]any,
-	desiredElements []map[string]any,
+	podNamespace string,
+	mergedElements []networkSelectionElement,
+	desiredElements []networkSelectionElement,
 	mergedDesiredKeys sets.Set[networkSelectionElementKey],
-	absentElementsByKey map[networkSelectionElementKey]map[string]any,
-) ([]map[string]any, error) {
+	absentElementsByKey map[networkSelectionElementKey]networkSelectionElement,
+) []networkSelectionElement {
 	for _, desiredElement := range desiredElements {
-		key, err := networkSelectionElementKeyFromMap(desiredElement)
-		if err != nil {
-			return nil, err
-		}
+		key := desiredElement.key(podNamespace)
 
 		if mergedDesiredKeys.Has(key) {
 			continue
@@ -145,15 +282,29 @@ func appendNewNetworkSelectionElements(
 			continue
 		}
 
-		mergedElements = append(mergedElements, maps.Clone(desiredElement))
+		mergedElements = append(mergedElements, desiredElement)
 	}
 
-	return mergedElements, nil
+	return mergedElements
+}
+
+// mergeNetworkSelectionElement overlays the KubeVirt-owned fields - exactly
+// the fields modeled by the struct - from the desired element onto the current
+// one; owned fields absent from the desired element are removed. A modeled
+// field is desired-wins by default: a field that must instead be preserved
+// from the current element needs an explicit assignment below (see CNIArgs,
+// which external controllers may have enriched).
+func mergeNetworkSelectionElement(current, desired networkSelectionElement) networkSelectionElement {
+	merged := desired
+	merged.extras = current.extras
+	merged.CNIArgs = current.CNIArgs
+
+	return merged
 }
 
 func marshalNetworkSelectionAnnotation(
 	current string,
-	currentElements, mergedElements []map[string]any,
+	currentElements, mergedElements []networkSelectionElement,
 ) (string, error) {
 	if len(mergedElements) == 0 {
 		return "", nil
@@ -171,24 +322,29 @@ func marshalNetworkSelectionAnnotation(
 	return string(mergedAnnotation), nil
 }
 
-func parseNetworkSelectionAnnotation(annotation string) ([]map[string]any, error) {
+func parseNetworkSelectionAnnotation(annotation string) ([]networkSelectionElement, error) {
 	if annotation == "" {
-		return []map[string]any{}, nil
+		return []networkSelectionElement{}, nil
 	}
 
-	var elements []map[string]any
+	var elements []networkSelectionElement
 	if err := json.Unmarshal([]byte(annotation), &elements); err != nil {
 		return nil, err
 	}
 	if elements == nil {
-		elements = []map[string]any{}
+		elements = []networkSelectionElement{}
+	}
+	for _, element := range elements {
+		if element.Name == "" {
+			return nil, errors.New(`network selection element is missing the "name" field`)
+		}
 	}
 
 	return elements, nil
 }
 
-func parseNetworkSelectionAnnotations(annotations []string) ([]map[string]any, error) {
-	elements := []map[string]any{}
+func parseNetworkSelectionAnnotations(annotations []string) ([]networkSelectionElement, error) {
+	elements := []networkSelectionElement{}
 	for _, annotation := range annotations {
 		parsedElements, err := parseNetworkSelectionAnnotation(annotation)
 		if err != nil {
@@ -200,13 +356,13 @@ func parseNetworkSelectionAnnotations(annotations []string) ([]map[string]any, e
 	return elements, nil
 }
 
-func indexNetworkSelectionElements(elements []map[string]any) (map[networkSelectionElementKey]map[string]any, error) {
-	elementsByKey := make(map[networkSelectionElementKey]map[string]any, len(elements))
+func indexNetworkSelectionElements(
+	podNamespace string,
+	elements []networkSelectionElement,
+) (map[networkSelectionElementKey]networkSelectionElement, error) {
+	elementsByKey := make(map[networkSelectionElementKey]networkSelectionElement, len(elements))
 	for _, element := range elements {
-		key, err := networkSelectionElementKeyFromMap(element)
-		if err != nil {
-			return nil, err
-		}
+		key := element.key(podNamespace)
 		if _, exists := elementsByKey[key]; exists {
 			return nil, fmt.Errorf("duplicate network selection element: %+v", key)
 		}
@@ -214,88 +370,4 @@ func indexNetworkSelectionElements(elements []map[string]any) (map[networkSelect
 	}
 
 	return elementsByKey, nil
-}
-
-func networkSelectionElementKeyFromMap(element map[string]any) (networkSelectionElementKey, error) {
-	name, err := requiredString(element, "name")
-	if err != nil {
-		return networkSelectionElementKey{}, err
-	}
-	namespace, err := optionalString(element, "namespace")
-	if err != nil {
-		return networkSelectionElementKey{}, err
-	}
-	iface, err := optionalString(element, "interface")
-	if err != nil {
-		return networkSelectionElementKey{}, err
-	}
-	logicNetworkName := ""
-	if iface == "" {
-		logicNetworkName, err = logicNetworkNameFromMap(element)
-		if err != nil {
-			return networkSelectionElementKey{}, err
-		}
-	}
-
-	return networkSelectionElementKey{
-		namespace:        namespace,
-		name:             name,
-		iface:            iface,
-		logicNetworkName: logicNetworkName,
-	}, nil
-}
-
-func mergeNetworkSelectionElement(current, desired map[string]any) map[string]any {
-	merged := maps.Clone(current)
-	for field := range kubevirtOwnedNetworkSelectionFields {
-		if value, exists := desired[field]; exists {
-			merged[field] = value
-		} else {
-			delete(merged, field)
-		}
-	}
-
-	return merged
-}
-
-func logicNetworkNameFromMap(element map[string]any) (string, error) {
-	value, exists := element["cni-args"]
-	if !exists || value == nil {
-		return "", nil
-	}
-
-	cniArgs, ok := value.(map[string]any)
-	if !ok {
-		return "", fmt.Errorf("network selection element has a non-object %q field: %v", "cni-args", value)
-	}
-
-	return optionalString(cniArgs, "logicNetworkName")
-}
-
-func requiredString(element map[string]any, field string) (string, error) {
-	value, exists := element[field]
-	if !exists || value == nil {
-		return "", fmt.Errorf("network selection element is missing the %q field", field)
-	}
-
-	valueString, ok := value.(string)
-	if !ok {
-		return "", fmt.Errorf("network selection element has a non-string %q field: %v", field, value)
-	}
-
-	return valueString, nil
-}
-
-func optionalString(element map[string]any, field string) (string, error) {
-	value, exists := element[field]
-	if !exists || value == nil {
-		return "", nil
-	}
-
-	valueString, ok := value.(string)
-	if !ok {
-		return "", fmt.Errorf("network selection element has a non-string %q field: %v", field, value)
-	}
-
-	return valueString, nil
 }

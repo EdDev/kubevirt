@@ -27,9 +27,11 @@ import (
 )
 
 var _ = Describe("Network selection annotation merge", func() {
+	const podNamespace = "default"
+
 	DescribeTable("should merge network selection annotations",
 		func(current, desired string, absent []string, expected string) {
-			merged, err := multus.MergeNetworkSelectionAnnotations(current, desired, absent...)
+			merged, err := multus.MergeNetworkSelectionAnnotations(podNamespace, current, desired, absent...)
 
 			Expect(err).NotTo(HaveOccurred())
 			Expect(merged).To(MatchJSON(expected))
@@ -39,6 +41,41 @@ var _ = Describe("Network selection annotation merge", func() {
 			`[{"name":"some-net","namespace":"default","interface":"pod1","mac":"02:00:00:00:00:02"}]`,
 			[]string{},
 			`[{"foo":"bar","ips":["192.0.2.1"],"interface":"pod1","mac":"02:00:00:00:00:02","name":"some-net","namespace":"default"}]`,
+		),
+		Entry("should merge an element that omits the namespace with its desired counterpart",
+			`[{"name":"some-net","interface":"pod1","foo":"bar"}]`,
+			`[{"name":"some-net","namespace":"default","interface":"pod1","mac":"02:00:00:00:00:02"}]`,
+			[]string{},
+			`[{"foo":"bar","interface":"pod1","mac":"02:00:00:00:00:02","name":"some-net","namespace":"default"}]`,
+		),
+		Entry("should remove an owned field that is absent from the desired annotation",
+			`[{"name":"some-net","namespace":"default","interface":"pod1","mac":"00:00:00:00:00:00","foo":"bar"}]`,
+			`[{"name":"some-net","namespace":"default","interface":"pod1"}]`,
+			[]string{},
+			`[{"foo":"bar","interface":"pod1","name":"some-net","namespace":"default"}]`,
+		),
+		Entry("should remove a current element with an explicit namespace via an absent element without one",
+			`[
+				{"name":"some-net","namespace":"default","interface":"pod1"},
+				{"name":"other-net","namespace":"default","interface":"pod2"}
+			]`,
+			`[{"name":"other-net","namespace":"default","interface":"pod2"}]`,
+			[]string{`[{"name":"some-net","interface":"pod1"}]`},
+			`[{"name":"other-net","namespace":"default","interface":"pod2"}]`,
+		),
+		Entry("should preserve nested extra values and nested cni-args extras",
+			`[{
+				"name":"some-net","namespace":"default","interface":"pod1",
+				"nested":{"a":[1,2,{"b":null}]},
+				"cni-args":{"deviceID":"0000:01:00.0","meta":{"vf":3}}
+			}]`,
+			`[{"name":"some-net","namespace":"default","interface":"pod1"}]`,
+			[]string{},
+			`[{
+				"cni-args":{"deviceID":"0000:01:00.0","meta":{"vf":3}},
+				"interface":"pod1","name":"some-net","namespace":"default",
+				"nested":{"a":[1,2,{"b":null}]}
+			}]`,
 		),
 		Entry("should not change cni-args",
 			`[{"name":"some-net","namespace":"default","interface":"pod1","cni-args":{"deviceID":"0000:01:00.0","logicNetworkName":"default"}}]`,
@@ -130,15 +167,65 @@ var _ = Describe("Network selection annotation merge", func() {
 		current := `[{"foo":"bar","interface":"pod1","name":"some-net","namespace":"default"}]`
 		desired := `[{"name":"some-net","namespace":"default","interface":"pod1"}]`
 
-		merged, err := multus.MergeNetworkSelectionAnnotations(current, desired)
+		merged, err := multus.MergeNetworkSelectionAnnotations(podNamespace, current, desired)
 
 		Expect(err).NotTo(HaveOccurred())
 		Expect(merged).To(Equal(current))
 	})
 
 	It("should fail when the current annotation is not valid JSON", func() {
-		_, err := multus.MergeNetworkSelectionAnnotations("not-json", "")
+		_, err := multus.MergeNetworkSelectionAnnotations(podNamespace, "not-json", "")
 
 		Expect(err).To(HaveOccurred())
+	})
+
+	It("should fail when an element has a non-object cni-args field", func() {
+		_, err := multus.MergeNetworkSelectionAnnotations(podNamespace, `[{"name":"some-net","cni-args":"not-an-object"}]`, "")
+
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("should fail when an element is missing the name field", func() {
+		_, err := multus.MergeNetworkSelectionAnnotations(podNamespace, `[{"interface":"pod1"}]`, "")
+
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(`missing the "name" field`))
+	})
+
+	It("should fail when the desired annotation has duplicate elements", func() {
+		_, err := multus.MergeNetworkSelectionAnnotations(
+			podNamespace,
+			`[{"name":"some-net","namespace":"default","interface":"pod1"}]`,
+			`[
+				{"name":"some-net","namespace":"default","interface":"pod1"},
+				{"name":"some-net","namespace":"default","interface":"pod1"}
+			]`,
+		)
+
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("duplicate network selection element"))
+	})
+
+	It("should not duplicate an owned field spelled with non-canonical casing", func() {
+		current := `[{"name":"some-net","namespace":"default","interface":"pod1","MAC":"00:00:00:00:00:00"}]`
+		desired := `[{"name":"some-net","namespace":"default","interface":"pod1","mac":"02:00:00:00:00:02"}]`
+
+		merged, err := multus.MergeNetworkSelectionAnnotations(podNamespace, current, desired)
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(merged).To(MatchJSON(`[{"interface":"pod1","mac":"02:00:00:00:00:02","name":"some-net","namespace":"default"}]`))
+	})
+
+	It("should preserve large integer values in extra fields", func() {
+		current := `[{"name":"some-net","interface":"pod1","count":9007199254740993}]`
+
+		merged, err := multus.MergeNetworkSelectionAnnotations(
+			podNamespace,
+			current,
+			`[{"name":"some-net","namespace":"default","interface":"pod1"}]`,
+		)
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(merged).To(Equal(`[{"count":9007199254740993,"interface":"pod1","name":"some-net","namespace":"default"}]`))
 	})
 })

@@ -26,6 +26,7 @@ go_library(
 go_test(
     name = "go_default_test",
     srcs = [
+        "annotation_merge_internal_test.go",
         "annotation_merge_test.go",
         "annotation_test.go",
         "multus_suite_test.go",

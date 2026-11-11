@@ -159,6 +159,7 @@ func (g Generator) generateMultusAnnotation(vmi *v1.VirtualMachineInstance, pod 
 
 	currentMultusAnnotation := pod.Annotations[networkv1.NetworkAttachmentAnnot]
 	mergedMultusAnnotation, err := multus.MergeNetworkSelectionAnnotations(
+		vmi.Namespace,
 		currentMultusAnnotation,
 		updatedMultusAnnotation,
 		absentMultusAnnotation,
